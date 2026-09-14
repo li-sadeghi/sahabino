@@ -1,0 +1,9 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+psycopg[binary]==3.2.9
+confluent-kafka==2.11.0
+google-play-scraper==1.2.7
+dpkt==1.9.8
+python-multipart==0.0.20
+httpx==0.28.1
+pytest==8.4.1
