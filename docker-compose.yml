@@ -1,0 +1,169 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sahabino}
+      POSTGRES_USER: ${POSTGRES_USER:-sahabino}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sahabino}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./common/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-sahabino} -d ${POSTGRES_DB:-sahabino}"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:3.9.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  kafka-init:
+    image: apache/kafka:3.9.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: >
+      bash -c '
+      /opt/kafka/bin/kafka-topics.sh
+      --bootstrap-server kafka:9092
+      --create
+      --if-not-exists
+      --topic playstore-stats
+      --partitions 1
+      --replication-factor 1
+      &&
+      /opt/kafka/bin/kafka-topics.sh
+      --bootstrap-server kafka:9092
+      --create
+      --if-not-exists
+      --topic playstore-reviews
+      --partitions 1
+      --replication-factor 1
+      &&
+      /opt/kafka/bin/kafka-topics.sh
+      --bootstrap-server kafka:9092
+      --create
+      --if-not-exists
+      --topic network-metrics
+      --partitions 1
+      --replication-factor 1'
+
+  app-service:
+    build:
+      context: .
+      dockerfile: app_service/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sahabino}:${POSTGRES_PASSWORD:-sahabino}@postgres:5432/${POSTGRES_DB:-sahabino}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  crawler-service:
+    build:
+      context: .
+      dockerfile: crawler_service/Dockerfile
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      APP_SERVICE_URL: http://app-service:8000
+      CRAWL_INTERVAL_SECONDS: ${CRAWL_INTERVAL_SECONDS:-3600}
+      PLAYSTORE_LANGUAGE: ${PLAYSTORE_LANGUAGE:-en}
+      PLAYSTORE_COUNTRY: ${PLAYSTORE_COUNTRY:-us}
+    ports:
+      - "8001:8001"
+    depends_on:
+      app-service:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  storage-service:
+    build:
+      context: .
+      dockerfile: storage_service/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sahabino}:${POSTGRES_PASSWORD:-sahabino}@postgres:5432/${POSTGRES_DB:-sahabino}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  network-service:
+    build:
+      context: .
+      dockerfile: network_service/Dockerfile
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    ports:
+      - "8002:8002"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+
+  metabase:
+    image: metabase/metabase:v0.58-lts
+    ports:
+      - "3000:3000"
+    volumes:
+      - metabase_data:/metabase-data
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  tests:
+    build:
+      context: .
+      dockerfile: tests/Dockerfile
+    profiles:
+      - tools
+
+volumes:
+  postgres_data:
+  kafka_data:
+  metabase_data:
