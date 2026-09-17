@@ -106,7 +106,10 @@ def analyze_pcap(
             is_ack = bool(flags & dpkt.tcp.TH_ACK)
 
             if is_syn and not is_ack:
-                syn_times[forward] = float(timestamp)
+                syn_times.setdefault(
+                    forward,
+                    float(timestamp),
+                )
             elif is_syn and is_ack and reverse in syn_times:
                 handshake_rtts.append(
                     (

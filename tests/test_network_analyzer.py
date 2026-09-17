@@ -163,3 +163,55 @@ def test_empty_pcap_has_zero_ratio(tmp_path: Path):
 
     assert result["total_bytes"] == 0
     assert result["overhead_ratio"] == 0.0
+
+def test_handshake_rtt_uses_initial_syn_when_syn_is_retransmitted(
+    tmp_path: Path,
+):
+    path = tmp_path / "syn-retransmission.pcap"
+
+    with path.open("wb") as stream:
+        writer = dpkt.pcap.Writer(stream)
+
+        # Initial SYN.
+        writer.writepkt(
+            packet(
+                "10.0.0.1",
+                "10.0.0.2",
+                1234,
+                443,
+                dpkt.tcp.TH_SYN,
+                seq=10,
+            ),
+            ts=1.0,
+        )
+
+        # Retransmitted SYN.
+        writer.writepkt(
+            packet(
+                "10.0.0.1",
+                "10.0.0.2",
+                1234,
+                443,
+                dpkt.tcp.TH_SYN,
+                seq=10,
+            ),
+            ts=1.03,
+        )
+
+        # SYN-ACK is received 50 ms after the initial SYN.
+        writer.writepkt(
+            packet(
+                "10.0.0.2",
+                "10.0.0.1",
+                443,
+                1234,
+                dpkt.tcp.TH_SYN | dpkt.tcp.TH_ACK,
+                seq=20,
+            ),
+            ts=1.05,
+        )
+
+    result = analyze_pcap(path)
+
+    assert result["handshake_rtt_ms"] == 50.0
+    assert result["retransmission_count"] == 1
