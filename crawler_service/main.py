@@ -96,9 +96,35 @@ def crawl_once() -> None:
 
 
 def scheduler_loop(stop_event: threading.Event) -> None:
+    next_run_at = time.monotonic()
+
     while not stop_event.is_set():
+        wait_seconds = max(
+            0,
+            next_run_at - time.monotonic(),
+        )
+
+        if stop_event.wait(wait_seconds):
+            break
+
+        logger.info("Starting scheduled crawl")
+
         crawl_once()
-        stop_event.wait(CRAWL_INTERVAL_SECONDS)
+
+        next_run_at += CRAWL_INTERVAL_SECONDS
+        now = time.monotonic()
+
+        if next_run_at <= now:
+            logger.warning(
+                "Crawl exceeded the configured interval; "
+                "scheduling the next crawl one interval from now"
+            )
+            next_run_at = now + CRAWL_INTERVAL_SECONDS
+
+        logger.info(
+            "Next scheduled crawl in %.1f seconds",
+            next_run_at - now,
+        )
 
 
 @asynccontextmanager
